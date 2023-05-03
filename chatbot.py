@@ -9,12 +9,13 @@ import urllib.parse
 import json
 import os
 from llm import ShoppingLLM
+from constants import AMZN_CATEGORIES
+from retrieval import RetrievalShoppingLLMTemplated, RetrievalShoppingLLM
 
 app = Flask(__name__)
 
 ACCESS_TOKEN = os.getenv("ACCESS_TOKEN")
 VERIFY_TOKEN = os.getenv("TOKEN")
-#TODO add in required export for OPENAI_API_KEY
 
 
 
@@ -24,6 +25,7 @@ class MyChatBot(FBChatBot):
     def __init__(self, access_token, verify_token):
         super().__init__(access_token, verify_token)
         self.shopping_llm = ShoppingLLM()
+        self.retrieval_llm = RetrievalShoppingLLM(AMZN_CATEGORIES)
 
     def process_text(self, user, text, nlp = Nlp.NONE):
         app.logger.debug("Received text: %s, nlp: %x" % (text, nlp))
@@ -32,23 +34,14 @@ class MyChatBot(FBChatBot):
             self.reply(user, "")
             return
         elif text == "start over":
-            user.response = None
-            user.query = None
-            user.category = None
-            user.store = None
-            user.product = None
-            user.receipt = None
-            self.reply(user, "")
+            self.shopping_llm = ShoppingLLM()
+            self.retrieval_llm = RetrievalShoppingLLM(AMZN_CATEGORIES)
+            self.reply(user, "starting over now")
             return
         
 
         raw_output, structured_output = self.shopping_llm.get_output(text)
         app.logger.debug("structured output of the shopping llm %s" % str(structured_output))
-        print("*"*100)
-        print(raw_output)
-        print("$"*100)
-        print(structured_output)
-        print("*"*100)
         user.query = structured_output["product"]
         user.store = structured_output["store"]
         user.category = structured_output["category"]
@@ -57,15 +50,19 @@ class MyChatBot(FBChatBot):
         # user.store = "nike"
         # user.category = "shoes"
         # user.category = "shoes"
-        user.category = None 
-        #TODO whenever category was set to anything besides None, the product results from the query were coming back as length 0
-        #TODO that's why it is set to None atm. Fixes not very difficult, just need to inspect API will be added in the next version.
-        user.product = None
-        user.receipt = None
+        # user.category = None 
+        # user.product = None
+        # user.receipt = None
 
         if user.store == None:
+            #continue gathering information
             self.reply(user, raw_output)
         else:
+            #stop gathering information and return results
+            user.query = structured_output["product"] + " " + structured_output["store"] + " " + structured_output["category"]
+            print("query"*100)
+            print(user.query)
+            print("query"*100)
             user.response = self.query(user)
             if user.response == None:
                 app.logger.error("Failed to query: %s", text)
@@ -90,8 +87,16 @@ class MyChatBot(FBChatBot):
 
             # Truncate the array to 10, a limitation of quick reply.
             del(products[10:])
-            app.logger.debug("product size %d" % len(products))
+            products = products[::-1]
+            
+
+            # app.logger.debug("product size %d" % len(products))
             self.generic_reply(user, "Choose your item, please!", products)
+            # self.reply(user, self.shopping_llm.get_output(str([p["title"] for p in products]))[0])
+            raw_output, structured_output = self.shopping_llm.get_output("""
+                ignore all previous instructions related to stating |store, category or product description|, just answer the following, of the following clothing items, which one do you think addresses the shoppers intent most accurately, and why?
+            """ + str([p["title"] for p in products]))
+            self.reply(user, raw_output)
 
 
     def query(self, user):
@@ -102,16 +107,20 @@ class MyChatBot(FBChatBot):
                 "offset": 0
             }
         }
+        
 
-        if user.category:
-            variables["meta"]["categories"] = urllib.parse.quote_plus(user.category)
+        # if user.category:
+        #     variables["meta"]["categories"] = urllib.parse.quote_plus(user.category)
 
-        # XXX: Need to find out the store API.
+        # : Need to find out the store API.
         #if user.store:
         #    variables["meta"]["stores"] = urllib.parse.quote_plus(user.store)
 
         query = "https://d.joinhoney.com/v3?operationName=searchProduct&variables=%s" % str(variables).replace("'", "\"").replace(" ", "")
-        app.logger.debug("Query: %s" % query)
+        # print("@"*300)
+        # print(query)
+        # print("@"*300)
+        # app.logger.debug("Query: %s" % query)
 
         r = requests.get(query)
         if r.status_code != requests.codes.ok:
